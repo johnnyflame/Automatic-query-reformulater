@@ -1,0 +1,2 @@
+model_checkpoint_path: "/Users/johnnyflame/atire/python/word2vec_learning/log/model.ckpt"
+all_model_checkpoint_paths: "/Users/johnnyflame/atire/python/word2vec_learning/log/model.ckpt"

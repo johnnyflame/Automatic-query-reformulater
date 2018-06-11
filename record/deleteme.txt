@@ -1,0 +1,2 @@
+episode: 0 average precision@40: 0.0 predicted reward:  0.54696327 
+episode: 0 average precision@40: 0.0 predicted reward:  0.51258713 
