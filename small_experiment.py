@@ -22,6 +22,10 @@ Author: Johnny Flame Lee
 """
 DUMMYMODE = False
 
+
+# How frequenty to test the network
+TEST_FREQUENCY = 200
+
 load_model = False
 
 script_dir = os.path.dirname(__file__)  # <-- absolute dir the script is in
@@ -29,7 +33,6 @@ record_dir = os.path.join(script_dir,"record")
 
 if not os.path.exists(record_dir):
     os.makedirs(record_dir)
-
 
 record_file_name = "tmp"
 
@@ -40,12 +43,15 @@ if not os.path.exists(weights_dir):
 
 weight_saving_path = os.path.join(script_dir,record_file_name,weights_dir,"model.ckpt")
 
-
 fitness_record = os.path.join(script_dir, record_dir,record_file_name)
-# running_reward_filepath = os.path.join(script_dir, record_file_name)
+reformulated_query_filepath = os.path.join(script_dir, record_dir,"test time reformulated query")
+test_time_MAP = os.path.join(script_dir, record_dir,"test time MAP")
+
+
+
 
 CREATE_DICTIONARY = True
-TOPIC_FILE = os.path.join(script_dir,"../evaluation/topics.51-61")
+TOPIC_FILE = os.path.join(script_dir,"../evaluation/topics.51")
 ASSESSMENT_FILE = os.path.join(script_dir,"../evaluation/WSJ.qrels")
 
 CONTEXT_WINDOW = 4
@@ -62,16 +68,11 @@ WORD_EMBEDDING_PATH = "wsj-collection-vectors"
 
 METRIC = " -mMAP@40"
 
-
 annealing_steps = 10000.
 start_eps = 1.0
 end_eps = 0.1
 eps = start_eps
 stepDrop = (start_eps - end_eps) / annealing_steps
-
-
-
-
 
 PADDING = np.zeros(WORD_VECTOR_DIMENSIONS)
 
@@ -81,8 +82,6 @@ random.seed(500)
 
 # HYPERPARAMETERS:
 atire.init("atire -a " + ASSESSMENT_FILE + METRIC)
-
-
 
 
 def write_to_file(filename, information):
@@ -265,10 +264,6 @@ class GenerateNetwork:
 
 
 
-
-
-
-
 def lookup_term_vectors(terms):
     """
     Looks up the wordembedding for a set of terms,
@@ -336,48 +331,40 @@ if __name__ == "__main__":
 
     with tf.Session() as sess:
 
-
         if load_model:
             saver.restore(sess, weight_saving_path)
+            print("Model loaded successfully")
         else:
             sess.run(init)
 
+        token_cache = {}
+        result_cache = {}
 
-        for topicID in querys_table:
-            current_query_term_list = querys_table[topicID]
-            result_cache = {}
-            token_cache = {}
+        for episode in range(0, 500000):
 
-            # This is the input to the left half of the neural network
-            current_query, query_vectors = lookup_term_vectors(current_query_term_list)
+            for topicID in querys_table:
+                current_query_term_list = querys_table[topicID]
 
+                # This is the input to the left half of the neural network
+                current_query, query_vectors = lookup_term_vectors(current_query_term_list)
+                # Get a list of all the words in the top 10 documents
+                if "".join(current_query) not in token_cache.keys():
+                    terms_in_results = retrieve_document_terms(" ".join(current_query))
+                    terms_in_query = current_query[0].split(" ")
+                    terms_in_results.insert(0, terms_in_query)
 
+                    terms_in_results = terms_in_results[:6]
 
-            # Get a list of all the words in the top 10 documents
-            # if "".join(current_query) not in token_cache.keys():
-            terms_in_results = retrieve_document_terms(" ".join(current_query))
-            #     token_cache["".join(current_query)] = tuple(terms_in_results)
-            # else:
-            #     terms_in_results = token_cache["".join(current_query)]
-
-
-            terms_in_query = current_query[0].split(" ")
-            terms_in_results.insert(0, terms_in_query)
-
-            for episode in range(0,500000):
-
+                    token_cache["".join(current_query)] = tuple(terms_in_results)
+                else:
+                    terms_in_results = token_cache["".join(current_query)]
 
                 # current_query = "South African"
                 reformulated_query = []
-
                 ep_history = []
                 candidate_terms = []
-                policy_training_history = []
-                aprob_list = []
                 actions = []
 
-
-                terms_in_results = terms_in_results[:6]
 
                 # terms_in_results = [['60','50','sanction','bus','europe','50','bus','china','bus']]
 
@@ -446,10 +433,7 @@ if __name__ == "__main__":
                         else:
                             a_prob = sess.run(network.aprob, feed_dict={network.query_input: query_vectors,
                                                                             network.candidate_and_context_input: candidate_and_context_vectors})
-                        aprob_list.append(a_prob)
-
                         a = 0
-
                         if a_prob > 0.5:
                             a = 1
                         else:
@@ -469,11 +453,14 @@ if __name__ == "__main__":
                 print("reformulated: ", reformulated_query)
 
 
-                if reformulated_query in result_cache.keys():
-                    reward = result_cache[reformulated_query]
-                else:
+                if topicID not in result_cache.keys():
+                    result_cache[topicID] = {}
+
+                if reformulated_query not in result_cache[topicID].keys():
                     reward = atire.lookup(int(topicID), reformulated_query)
-                    result_cache[reformulated_query] = reward
+                    result_cache[topicID][reformulated_query] = reward
+                else:
+                    reward = result_cache[topicID][reformulated_query]
 
 
 
@@ -502,21 +489,125 @@ if __name__ == "__main__":
 
                 print("policy loss:{}, value loss {} ".format(policy_loss,value_loss))
 
-                if episode % 50 == 0:
+            if episode % 50 == 0:
+                # info = [
+                #     ["episode: ", episode],
+                #     ["average precision@40: ",reward],
+                #     ["predicted reward: ", predicted_reward]
+                #         ]
+                # write_to_file(fitness_record, info )
+
+                save_path = saver.save(sess, weight_saving_path)
+                print("Model saved in path: %s" % save_path)
+
+
+            if episode  % TEST_FREQUENCY == 0:
+                # test begins here
+                print("testing....")
+                average_precisions = []
+
+                for topicID in querys_table:
+                    current_query_term_list = querys_table[topicID]
+                    # This is the input to the left half of the neural network
+                    current_query, query_vectors = lookup_term_vectors(current_query_term_list)
+
+                    terms_in_results = token_cache["".join(current_query)]
+                    actions = []
+                    reformulated_query = []
+
+                    # terms_in_results = [['60','50','sanction','bus','europe','50','bus','china','bus']]
+
+                    # Each document in the top 10 results list
+                    for doc in terms_in_results:
+                        # For each term in one of the documents
+                        for i in range(0, len(doc)):
+                            candidate_and_context = []
+                            candidate_term = (doc[i])
+                            candidate_terms.append(candidate_term)
+
+                            # This represents the state
+                            candidate_and_context_vectors = []
+
+                            # pad on the left
+                            if i < CONTEXT_WINDOW:
+                                diff = CONTEXT_WINDOW - i
+                                candidate_and_context = doc[0:i + CONTEXT_WINDOW + 1]
+                                for term in candidate_and_context:
+                                    candidate_and_context_vectors.append(word_embedding.wv[term])
+
+                                for j in range(0, diff):
+                                    candidate_and_context.insert(0, "$PADDING$")
+                                    candidate_and_context_vectors.insert(0, PADDING)
+
+                                if (len(candidate_and_context)) < CANDIDATE_AND_CONTEXT_LENGTH:
+                                    for j in range(len(candidate_and_context), CANDIDATE_AND_CONTEXT_LENGTH):
+                                        candidate_and_context.append("$PADDING$")
+                                        candidate_and_context_vectors.append(PADDING)
+
+                            # pad on the right---
+                            elif (len(doc) - (i + 1)) < CONTEXT_WINDOW:
+                                # TODO: A known issue here: '' seperation at the end of each document is counted as a valid term, this may require fixing if it causes a problem in query reformulation.
+
+                                diff = CONTEXT_WINDOW - (len(doc) - (i + 1))
+                                candidate_and_context = doc[i - CONTEXT_WINDOW:len(doc)]
+                                for term in candidate_and_context:
+                                    candidate_and_context_vectors.append(word_embedding.wv[term])
+
+                                for j in range(0, diff):
+                                    candidate_and_context.append("$PADDING$")
+                                    candidate_and_context_vectors.append(PADDING)
+
+                                if (len(candidate_and_context)) < CANDIDATE_AND_CONTEXT_LENGTH:
+                                    for j in range(len(candidate_and_context), CANDIDATE_AND_CONTEXT_LENGTH):
+                                        candidate_and_context.insert(0, "$PADDING$")
+                                        candidate_and_context_vectors.insert(0, PADDING)
+                            # No padding, sliding window in normal range
+                            else:
+                                candidate_and_context = doc[i - CONTEXT_WINDOW:i + CONTEXT_WINDOW + 1]
+                                for term in candidate_and_context:
+                                    candidate_and_context_vectors.append(word_embedding.wv[term])
+
+                            a_prob = sess.run(network.aprob, feed_dict={network.query_input: query_vectors,
+                                                                            network.candidate_and_context_input: candidate_and_context_vectors})
+
+                            if a_prob > 0.5:
+                                a = 1
+                            else:
+                                a = 0
+
+                            actions.append(a)
+
+                    for i in range(0, len(actions)):
+                        if actions[i] == 1:
+                            reformulated_query.append(candidate_terms[i])
+
+                    reformulated_query = " ".join(reformulated_query)
+                    print("reformulated query at test time: ", reformulated_query)
+
+                    if reformulated_query not in result_cache[topicID].keys():
+                        reward = atire.lookup(int(topicID), reformulated_query)
+                        result_cache[topicID][reformulated_query] = reward
+                    else:
+                        reward = result_cache[topicID][reformulated_query]
+                    print("average precision for test time reformulated query: ", reward)
+
                     info = [
                         ["episode: ", episode],
-                        ["average precision@40: ",reward],
-                        ["predicted reward: ", predicted_reward]
-                            ]
-                    write_to_file(fitness_record, info )
+                        ["reward : ", reward],
+                        ["reformulated query ", reformulated_query],
+                    ]
 
-                    save_path = saver.save(sess, weight_saving_path)
+                    write_to_file(reformulated_query_filepath,info)
+                    average_precisions.append(reward)
 
-                    print("Model saved in path: %s" % save_path)
+                average_precisions = np.array(average_precisions)
+                mean_average_precision = np.mean(average_precisions)
+                print("Mean average precision: ", mean_average_precision)
 
-
-
-
-
+                info = [
+                    ["episode: ", episode],
+                    ["MAP@40: ",mean_average_precision],
+                        ]
+                write_to_file(test_time_MAP, info )
 
 
